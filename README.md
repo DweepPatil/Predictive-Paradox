@@ -1,4 +1,4 @@
-# ⚡ Power Demand Forecasting
+markdown_content = """# ⚡ Power Demand Forecasting
 
 A production-grade, end-to-end machine learning pipeline for **next-hour electricity demand forecasting** on the national grid. Built with LightGBM on a fully engineered multi-source dataset spanning 2015–2025.
 
@@ -115,12 +115,15 @@ LightGBM was chosen for its highly optimized gradient-boosted tree architecture,
 
 ### Feature Selection
 
-Two features were intentionally excluded after iterative testing:
+Through rigorous iterative testing, a massive **11 features** were intentionally pruned from the final model. Removing this data actually *increased* the AI's predictive intelligence by eliminating collinearity, lazy categorical shortcuts, and high-frequency noise:
 
-- **`generation_mw`** — Near-identical to `demand_mw` (offset only by load shedding), creating heavy collinearity that dilutes signal.
-- **`day_of_week`** (raw categorical) — Acts as a lazy shortcut. Removing it forces the model to navigate the week using the mathematically correct `day_of_week_sin` / `cos` cyclical encodings, producing smoother boundary transitions.
+- **Collinear Baselines:** `generation_mw` was dropped because it is near-identical to `demand_mw`. Feeding the model both dilutes the primary signal.
+- **Categorical Crutches:** `day_of_week` and `is_weekend` were dropped. Removing these rigid boxes forces the model to navigate the week using the mathematically continuous `day_of_week_sin` / `cos` cyclical encodings, producing smoother boundary transitions.
+- **Point-in-Time Lags:** `lag_previous_hour`, `lag_yesterday_target_hour`, and `lag_lastweek_target_hour` were dropped. Exact historical lags introduce an "echo of noise" (e.g., blindly predicting a spike today just because a random anomaly happened exactly 24 hours ago). Removing these forces the model to rely purely on the *smoothed momentum* of rolling averages.
+- **Meteorological Noise:** `precipitation_mm` and `cloud_cover_pct` were dropped, isolating `apparent_temperature` as the sole, undisputed thermodynamic driver of human cooling/heating load.
+- **Macroeconomic Collinearity:** `year`, `manufacturing_constant_2015_usd`, and `population_total` were dropped. Because these broadly trend upward together, they create collinear noise. Leaving *only* `gdp_constant_2015_usd` provides the AI with a single, perfectly clean structural anchor for the grid's multi-year growth.
 
-**Total features fed to the model: 24**
+**Total features fed to the final model: 15**
 
 ---
 
@@ -142,35 +145,31 @@ Performance is evaluated on the chronological hold-out test set using **Mean Abs
 | Model | Test MAPE |
 |---|---|
 | **Naive Baseline** (previous hour = next hour) | 3.33% |
-| **LightGBM** | **1.75%** |
+| **LightGBM (Highly Tuned)** | **1.71%** |
 
 ### Interpreting the MAPE Magnitude
 
 The Naive Baseline MAPE of **3.33%** reflects the natural intra-hour volatility of the grid — demand changes fast enough that simply repeating the current reading fails by over 3% on average.
 
-The LightGBM MAPE of **1.75%** represents a **47.4% error reduction** over the naive baseline, meaning the model cuts prediction error nearly in half by learning temporal geometry, behavioral cycles, and weather coupling. For a national grid context — where even 1% of demand can represent hundreds of megawatts — a 1.75% MAPE is operationally significant. Predictions are within 1.75% of actual demand on average, across an **18-month future hold-out window** the model has never seen.
+The fully pruned LightGBM model's MAPE of **1.71%** represents an incredible **48.6% error reduction** over the naive baseline. By successfully stripping away noisy lags and redundant variables, the model cuts prediction error nearly in half, relying purely on smoothed momentum, temporal geometry, and temperature. For a national grid context, predictions within 1.71% across an **18-month future hold-out window** are operationally superb.
 
 ---
 
 ## 🧠 Feature Importance Analysis
 
-LightGBM's `feature_importances_` counts how many times each feature was used as a decision split across all 500 trees. The chart reveals a clear and physically logical four-tier hierarchy:
+LightGBM's `feature_importances_` counts how many times each feature was used as a decision split across all 500 trees. With all noise, exact lags, and collinearity removed, the AI's "brain" reveals a perfectly logical hierarchy:
 
-### Tier 1 — Dominant Driver: Current Grid State
+### Tier 1 — Dominant Driver: Immediate Grid State
+**`demand_mw`** is the undisputed king (nearly 2,500 splits). With historical lags gone, the model leans heavily on the immediate prior state of the grid. This confirms electricity consumption is highly autocorrelated at the 1-hour mark, retroactively validating the removal of `generation_mw` to consolidate the baseline signal.
 
-**`demand_mw`** is the single most important feature by a wide margin (~2,050 splits) — nearly 30% more than the next feature. This confirms that current grid load is the strongest predictor of next-hour demand, as electricity consumption is highly autocorrelated at the 1-hour lag. This also retroactively validates the decision to drop `generation_mw`: with collinearity removed, `demand_mw` cleanly absorbed the full baseline signal.
+### Tier 2 — Daily Geometry
+**`hour`** and **`hour_sin`** form the second tier. The model calculates the context of the demand by using the ordinal `hour` for absolute thresholds (e.g., "is the sun down?") and the continuous `hour_sin` to mathematically map the smooth human behavioral cycle of the day.
 
-### Tier 2 — Temporal Geometry (~750–1,575 splits)
+### Tier 3 — Weather & Smoothed Momentum
+**`apparent_temperature`**, **`rolling_mean_24h`**, and **`rolling_mean_6h`** cluster together here. Stripped of point-in-time lags, the AI uses rolling means to understand recent grid momentum without overfitting to yesterday's micro-spikes. It combines this momentum directly with the apparent temperature to calculate how cooling/heating loads will warp the baseline schedule.
 
-**`hour`**, **`hour_sin`**, **`hour_cos`**, **`month`**, and **`rolling_mean_24h`** cluster as the second tier. Notably, both the raw `hour` (ordinal) and its cyclical encodings (`hour_sin`, `hour_cos`) rank highly — the model uses the ordinal form for absolute thresholds ("is it past 6 PM?") and the sine/cosine form for smooth cycle-boundary transitions. This dual-use confirms that cyclical encoding added genuine value rather than creating redundancy.
-
-### Tier 3 — Behavioral Memory & Weather (~850–1,225 splits)
-
-**`lag_yesterday_target_hour`** and **`lag_lastweek_target_hour`** both rank *higher* than `lag_previous_hour`. This is the most revealing insight from the chart: the model finds that *what happened at this exact hour yesterday and last week* is more predictive than the immediate prior hour. It means human behavioral patterns — work schedules, sleep cycles, weekly industrial rhythms — are stronger demand drivers than short-term momentum alone. **`apparent_temperature`** also sits in this tier (~975 splits), confirming strong weather-demand coupling driven by air conditioning load.
-
-### Tier 4 — Low Signal / Structural Features (near-zero splits)
-
-**`manufacturing_constant_2015_usd`**, **`gdp_constant_2015_usd`**, and **`population_total`** all register effectively zero splits. This does not mean they are useless — these macroeconomic features provide the long-run structural baseline that keeps the model calibrated across multi-year growth trends in the dataset. However, LightGBM correctly deprioritized them because annual indicators change too slowly to add discriminative power at the hourly split level. Their near-zero importance confirms the model is not overfitting to economic noise.
+### Tier 4 — Macroscopic Anchors
+**`month`**, **`gdp_constant_2015_usd`**, and **`hour_cos`** sit in the 750–900 split range. A massive success of the feature pruning is visible here: by dropping the redundant Population, Manufacturing, and Year columns, **GDP** cleanly absorbed the entire macroeconomic signal. The AI uses it exactly as intended—as an annual structural baseline to keep the model calibrated across multi-year economic growth.
 
 ---
 
