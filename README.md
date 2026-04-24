@@ -1,4 +1,4 @@
-markdown_content = """# ⚡ Power Demand Forecasting
+# ⚡ Power Demand Forecasting
 
 A production-grade, end-to-end machine learning pipeline for **next-hour electricity demand forecasting** on the national grid. Built with LightGBM on a fully engineered multi-source dataset spanning 2015–2025.
 
